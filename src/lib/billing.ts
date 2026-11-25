@@ -16,7 +16,7 @@ export const cookieOptions = {
 export function billingConfigured() {
   return Boolean(
     process.env.NEXT_PUBLIC_PADDLE_ENV === "sandbox" &&
-      process.env.PADDLE_API_KEY &&
+      process.env.PADDLE_API_KEY?.includes("_sdbx") &&
       /^pri_[a-z0-9]{26}$/.test(
         process.env.NEXT_PUBLIC_PADDLE_PRICE_ID ?? "",
       ) &&

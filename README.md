@@ -25,7 +25,7 @@ PDF extraction is available in local development and to active sandbox Pro subsc
 
 ## Paddle Pro
 
-Create a LeaseDesk Pro product and an active recurring price for USD 9 every month with a 30-day free trial that collects a payment method. Set Paddle's default payment link to the LeaseDesk homepage on your approved domain. Use a Paddle sandbox account for testing. Grant the Paddle API key Price Read, Transaction Write, Subscription Read, and Customer Portal Session Write permissions.
+Create a LeaseDesk Pro product and an active recurring price for USD 20 every month with a 30-day free trial that collects a payment method. Set Paddle's default payment link to the LeaseDesk homepage on your approved domain. Use a Paddle sandbox account for testing. Grant the Paddle API key Price Read, Transaction Write, Subscription Read, and Customer Portal Session Write permissions.
 
 Set these variables in `.env.local` or your deployment environment and rebuild after changing public variables.
 

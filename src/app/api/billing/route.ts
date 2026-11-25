@@ -1,6 +1,7 @@
 import { randomBytes } from "node:crypto";
 import { cookies } from "next/headers";
 import { sameOrigin } from "@/lib/request-security";
+import { proPlan } from "@/lib/pro-plan";
 import {
   billingConfigured,
   billingReference,
@@ -90,19 +91,18 @@ export async function POST(request: Request) {
     }>("/prices/" + priceId);
     if (
       price.status !== "active" ||
-      price.unit_price.amount !== "900" ||
-      price.unit_price.currency_code !== "USD" ||
+      price.unit_price.amount !== String(proPlan.monthlyAmount * 100) ||
+      price.unit_price.currency_code !== proPlan.currency ||
       price.billing_cycle?.interval !== "month" ||
       price.billing_cycle.frequency !== 1 ||
       price.trial_period?.interval !== "day" ||
-      price.trial_period.frequency !== 30 ||
+      price.trial_period.frequency !== proPlan.trialDays ||
       Number(price.trial_period.unit_price?.amount ?? 0) !== 0 ||
       price.trial_period.requires_payment_method === false
     ) {
       return Response.json(
         {
-          error:
-            "Configure the Paddle Pro price for USD 9 monthly with a 30-day free trial.",
+          error: `Configure the Paddle Pro price for ${proPlan.currency} ${proPlan.monthlyAmount} monthly with a ${proPlan.trialDays}-day free trial.`,
         },
         { headers, status: 503 },
       );

@@ -1,6 +1,7 @@
 "use client";
 
 import Script from "next/script";
+import { proPlan } from "@/lib/pro-plan";
 import { useEffect, useState } from "react";
 
 type Paddle = {
@@ -124,7 +125,8 @@ export function Billing({ state, setState }: ReturnType<typeof useBilling>) {
       <div>
         <strong>LeaseDesk Pro</strong>
         <p className="text-zinc-600 tabular-nums">
-          30-day free trial, then US$9 per month
+          {proPlan.trialDays}-day free trial, then US${proPlan.monthlyAmount}{" "}
+          per month
         </p>
       </div>
       <div className="flex flex-wrap items-center gap-3">
