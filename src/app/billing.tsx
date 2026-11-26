@@ -2,7 +2,7 @@
 
 import Script from "next/script";
 import { proPlan } from "@/lib/pro-plan";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 type Paddle = {
   Environment: { set: (environment: "sandbox") => void };
@@ -15,8 +15,10 @@ type Paddle = {
 
 type BillingState = {
   configured?: boolean;
+  paidCheckoutAvailable?: boolean;
   pdfImportAvailable?: boolean;
   active?: boolean;
+  workspaceId?: string | null;
   status?: string;
   management?: { update_payment_method?: string; cancel?: string };
   error?: string;
@@ -54,22 +56,43 @@ export function useBilling() {
 
 export function Billing({ state, setState }: ReturnType<typeof useBilling>) {
   const [ready, setReady] = useState(false);
-  const [working, setWorking] = useState(false);
+  const [working, setWorking] = useState<"trial" | "paid" | null>(null);
   const [message, setMessage] = useState("");
+  const statusCheck = useRef<AbortController | null>(null);
 
-  async function refresh() {
+  useEffect(() => () => statusCheck.current?.abort(), []);
+
+  async function refresh(waitForCheckout = false) {
+    statusCheck.current?.abort();
+    const controller = new AbortController();
+    statusCheck.current = controller;
+    if (waitForCheckout) setMessage("Confirming checkout with Paddle…");
     try {
-      const response = await fetch("/api/billing", { cache: "no-store" });
-      const data: BillingState = await response.json();
-      setState(data);
-      setMessage(
-        data.error ||
-          (data.active
-            ? ""
-            : "If you just checked out, refresh billing in a moment."),
-      );
+      const attempts = waitForCheckout ? 8 : 1;
+      for (let attempt = 0; attempt < attempts; attempt++) {
+        if (attempt) await new Promise((resolve) => setTimeout(resolve, 2000));
+        if (controller.signal.aborted) return;
+        const response = await fetch("/api/billing", {
+          cache: "no-store",
+          signal: controller.signal,
+        });
+        const data: BillingState = await response.json();
+        if (controller.signal.aborted) return;
+        if (response.ok) setState(data);
+        if (data.active && data.workspaceId) {
+          setMessage("");
+          return;
+        }
+        if (attempt === attempts - 1) {
+          setMessage(
+            data.error ||
+              "If you just checked out, refresh billing in a moment.",
+          );
+        }
+      }
     } catch {
-      setMessage("Could not check billing. Try again.");
+      if (!controller.signal.aborted)
+        setMessage("Could not check billing. Try again.");
     }
   }
 
@@ -81,7 +104,7 @@ export function Billing({ state, setState }: ReturnType<typeof useBilling>) {
       paddle.Initialize({
         token,
         eventCallback: ({ name }) => {
-          if (name === "checkout.completed") void refresh();
+          if (name === "checkout.completed") void refresh(true);
           if (name === "checkout.error")
             setMessage("Paddle could not open checkout. Try again.");
         },
@@ -91,12 +114,16 @@ export function Billing({ state, setState }: ReturnType<typeof useBilling>) {
     setReady(true);
   }
 
-  async function checkout() {
+  async function checkout(mode: "trial" | "paid") {
     if (!window.Paddle || working) return;
-    setWorking(true);
+    setWorking(mode);
     setMessage("");
     try {
-      const response = await fetch("/api/billing", { method: "POST" });
+      const response = await fetch("/api/billing", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ mode }),
+      });
       const data = await response.json();
       if (!response.ok)
         throw new Error(data.error || "Checkout is unavailable.");
@@ -106,7 +133,7 @@ export function Billing({ state, setState }: ReturnType<typeof useBilling>) {
         error instanceof Error ? error.message : "Checkout is unavailable.",
       );
     } finally {
-      setWorking(false);
+      setWorking(null);
     }
   }
 
@@ -151,16 +178,28 @@ export function Billing({ state, setState }: ReturnType<typeof useBilling>) {
         {state.configured &&
           !state.active &&
           (!state.management || state.status === "canceled") && (
-            <button
-              onClick={checkout}
-              disabled={!ready || working}
-              className="rounded-md bg-zinc-900 px-3 py-2 text-white disabled:opacity-50"
-            >
-              {working ? "Opening checkout…" : "Start free trial"}
-            </button>
+            <>
+              <button
+                onClick={() => checkout("trial")}
+                disabled={!ready || working !== null}
+                className="rounded-md bg-zinc-900 px-3 py-2 text-white disabled:opacity-50"
+              >
+                {working === "trial" ? "Opening checkout…" : "Start free trial"}
+              </button>
+              {state.paidCheckoutAvailable && (
+                <button
+                  onClick={() => checkout("paid")}
+                  disabled={!ready || working !== null}
+                  aria-label="Upgrade to Pro and pay today"
+                  className="rounded-md border border-zinc-300 px-3 py-2 text-zinc-900 hover:bg-zinc-50 disabled:opacity-50"
+                >
+                  {working === "paid" ? "Opening checkout…" : "Upgrade to Pro"}
+                </button>
+              )}
+            </>
           )}
         {token && (
-          <button onClick={refresh} className="underline">
+          <button onClick={() => refresh()} className="underline">
             Refresh billing
           </button>
         )}

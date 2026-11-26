@@ -28,9 +28,22 @@ export function billingReference(secret: string) {
   return createHash("sha256").update(secret).digest("hex");
 }
 
-export async function paddle<T>(path: string, body?: object): Promise<T> {
+export function paidPriceId() {
+  const id = process.env.PADDLE_PAID_PRICE_ID;
+  return id &&
+    id !== process.env.NEXT_PUBLIC_PADDLE_PRICE_ID &&
+    /^pri_[a-z0-9]{26}$/.test(id)
+    ? id
+    : undefined;
+}
+
+export async function paddle<T>(
+  path: string,
+  body?: object,
+  method = body ? "POST" : "GET",
+): Promise<T> {
   const response = await fetch("https://sandbox-api.paddle.com" + path, {
-    method: body ? "POST" : "GET",
+    method,
     headers: {
       Authorization: "Bearer " + process.env.PADDLE_API_KEY,
       "Content-Type": "application/json",
@@ -49,6 +62,7 @@ export type Transaction = {
   status: string;
   custom_data?: { leasedesk?: string };
   subscription_id?: string;
+  items?: { price: { id: string }; quantity: number }[];
 };
 
 type Subscription = {
@@ -63,6 +77,7 @@ export async function getMembership() {
   const id = jar.get(transactionCookie)?.value;
   const inactive = {
     active: false,
+    workspaceId: null,
     status: "inactive",
     transaction: null,
     management: undefined,
@@ -85,10 +100,19 @@ export async function getMembership() {
     "/subscriptions/" + transaction.subscription_id,
   );
   const matches = subscription.items.some(
-    ({ price }) => price.id === process.env.NEXT_PUBLIC_PADDLE_PRICE_ID,
+    ({ price }) =>
+      price.id === process.env.NEXT_PUBLIC_PADDLE_PRICE_ID ||
+      price.id === paidPriceId(),
   );
+  const active =
+    matches && ["trialing", "active"].includes(subscription.status);
   return {
-    active: matches && ["trialing", "active"].includes(subscription.status),
+    active,
+    workspaceId: active
+      ? createHash("sha256")
+          .update("leasedesk:" + transaction.subscription_id)
+          .digest("hex")
+      : null,
     status: subscription.status,
     management: matches ? subscription.management_urls : undefined,
     transaction,

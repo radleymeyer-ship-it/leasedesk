@@ -13,6 +13,8 @@ npm run dev
 
 Open http://localhost:3000. With Paddle unconfigured, the dashboard runs in demo mode. Lease records are stored in the current browser. Reset sample data replaces all records in that browser after confirmation.
 
+Once Paddle verifies a trial or paid subscription, LeaseDesk opens an empty workspace for that subscription. New leases are kept separately from the demo in that browser, and the same workspace opens when the trial converts to paid Pro.
+
 Use sample data on shared devices. Browser storage is readable by scripts served from the same origin and is shared by people using the same browser profile. Use authenticated, organization-scoped storage before onboarding customers.
 
 ## PDF import
@@ -34,10 +36,13 @@ Set these variables in `.env.local` or your deployment environment and rebuild a
 | `NEXT_PUBLIC_PADDLE_ENV` | `sandbox` |
 | `NEXT_PUBLIC_PADDLE_CLIENT_TOKEN` | Paddle sandbox client-side token starting with `test_` |
 | `NEXT_PUBLIC_PADDLE_PRICE_ID` | Paddle price ID for the Pro plan |
+| `PADDLE_PAID_PRICE_ID` | Optional second Paddle price ID for USD 20 monthly without a trial. Enables **Upgrade to Pro** for customers who want to pay today. |
 | `PADDLE_API_KEY` | Server-only Paddle sandbox API key |
 | `APP_ORIGIN` | Public app origin such as `https://app.example.com`, without a trailing slash, if a proxy rewrites the request origin |
 
 Use HTTPS for any hosted sandbox. The server checks Paddle before starting a checkout and when determining whether a sandbox subscription can import PDFs. Browser billing cookies support sandbox testing on the same browser and origin.
+
+Trial subscriptions renew into Pro automatically unless cancelled. Use matching South Africa price overrides on both prices if you configure fixed rand billing.
 
 Live checkout is disabled pending account-based billing. Before enabling it, link Paddle subscriptions to signed-in organization accounts, verify Paddle webhook signatures, and apply durable upload quotas. Use database authorization policies to isolate leases and contacts by organization. Keep `PADDLE_API_KEY` and `GEMINI_API_KEY` server-side. The Paddle client token and price ID are public configuration.
 

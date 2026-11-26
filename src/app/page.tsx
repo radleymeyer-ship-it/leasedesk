@@ -274,7 +274,7 @@ type Row = ReturnType<typeof derive>;
   },
 };
 
-const storageKey = "leasedesk.leases";
+const demoStorageKey = "leasedesk.leases";
 const blankLease: LeaseDraft = {
   property: "",
   unit: "",
@@ -312,12 +312,38 @@ type Parse =
   | { k: "err"; msg: string };
 
 export default function Page() {
+  const billing = useBilling();
+  const workspaceId = billing.state.active ? billing.state.workspaceId : null;
+  return (
+    <div className="min-h-screen bg-[#F8FAFC] text-zinc-900 antialiased tabular-nums">
+      <Workspace
+        key={workspaceId ?? "demo"}
+        workspaceId={workspaceId ?? null}
+        billing={billing.state}
+      />
+      <div className="px-4 pb-6 sm:px-6 md:ml-[72px]">
+        <div className="mx-auto max-w-[1600px]">
+          <Billing {...billing} />
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function Workspace({
+  workspaceId,
+  billing,
+}: {
+  workspaceId: string | null;
+  billing: ReturnType<typeof useBilling>["state"];
+}) {
+  const storageKey = workspaceId
+    ? `leasedesk.workspace.${workspaceId}.leases`
+    : demoStorageKey;
   const [today, setToday] = useState<Date | null>(null);
   const [leases, setLeases] = useState<StoredLease[]>([]);
   const [storageError, setStorageError] = useState("");
-  const billing = useBilling();
-  const canUseWorkspace =
-    billing.state.active || billing.state.configured === false;
+  const canUseWorkspace = Boolean(workspaceId) || billing.configured === false;
 
   useEffect(() => {
     function load() {
@@ -325,7 +351,12 @@ export default function Page() {
       let records: StoredLease[] = [];
       try {
         const saved = localStorage.getItem(storageKey);
-        records = saved === null ? sampleLeases(date) : JSON.parse(saved);
+        records =
+          saved === null
+            ? workspaceId
+              ? []
+              : sampleLeases(date)
+            : JSON.parse(saved);
         if (
           !Array.isArray(records) ||
           records.some(
@@ -358,7 +389,7 @@ export default function Page() {
       clearInterval(timer);
       window.removeEventListener("storage", sync);
     };
-  }, []);
+  }, [storageKey, workspaceId]);
 
   function persist(update: (records: StoredLease[]) => StoredLease[]) {
     try {
@@ -511,7 +542,7 @@ export default function Page() {
     }
   }
   return (
-    <div className="min-h-screen bg-[#F8FAFC] text-zinc-900 antialiased tabular-nums">
+    <div>
       {" "}
       {/* Top Accent Strip matching the 3 logo colors (Red, Amber, Emerald) */}{" "}
       <nav
@@ -577,7 +608,7 @@ export default function Page() {
               disabled={
                 !today ||
                 !canUseWorkspace ||
-                !billing.state.pdfImportAvailable ||
+                !billing.pdfImportAvailable ||
                 parse.k === "busy"
               }
               aria-describedby="pdf-import-description"
@@ -770,7 +801,28 @@ export default function Page() {
                               colSpan={7}
                               className="p-10 text-center text-slate-600"
                             >
-                              No leases match your filters.
+                              {workspaceId && today && leases.length === 0 ? (
+                                <div className="space-y-2">
+                                  <p className="font-semibold text-slate-900">
+                                    Your workspace is ready
+                                  </p>
+                                  <p>
+                                    Upload a lease PDF or add a lease manually
+                                    to get started.
+                                  </p>
+                                  <button
+                                    type="button"
+                                    onClick={() =>
+                                      setEditor({ lease: blankLease })
+                                    }
+                                    className="mt-2 rounded-md bg-zinc-900 px-3 py-2 font-medium text-white"
+                                  >
+                                    Add your first lease
+                                  </button>
+                                </div>
+                              ) : (
+                                "No leases match your filters."
+                              )}
                             </td>
                           </tr>
                         )}
@@ -1128,35 +1180,36 @@ export default function Page() {
                 </div>{" "}
               </section>
             )}{" "}
-            <button
-              type="button"
-              className="text-sm text-zinc-600 underline"
-              disabled={!today || parse.k === "busy"}
-              onClick={async () => {
-                if (
-                  today &&
-                  window.confirm(
-                    "Replace all saved leases in this browser with sample data?",
-                  )
-                ) {
-                  const tracked = leases.filter(
-                    (lease) => lease.automationOwner,
-                  );
-                  for (const lease of tracked) {
-                    if (!(await stopAutomation(lease))) return;
+            {!workspaceId && (
+              <button
+                type="button"
+                className="text-sm text-zinc-600 underline"
+                disabled={!today || parse.k === "busy"}
+                onClick={async () => {
+                  if (
+                    today &&
+                    window.confirm(
+                      "Replace all saved leases in this browser with sample data?",
+                    )
+                  ) {
+                    const tracked = leases.filter(
+                      (lease) => lease.automationOwner,
+                    );
+                    for (const lease of tracked) {
+                      if (!(await stopAutomation(lease))) return;
+                    }
+                    if (persist(() => sampleLeases(today))) {
+                      setNav("portfolio");
+                      setView("all");
+                      setQ("");
+                    }
                   }
-                  if (persist(() => sampleLeases(today))) {
-                    setNav("portfolio");
-                    setView("all");
-                    setQ("");
-                  }
-                }
-              }}
-            >
-              Reset sample data
-            </button>
+                }}
+              >
+                Reset sample data
+              </button>
+            )}
           </fieldset>
-          <Billing {...billing} />
         </div>
       </main>{" "}
       {/* Modals */}{" "}

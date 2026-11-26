@@ -1,6 +1,6 @@
 import { randomBytes } from "node:crypto";
 import { cookies } from "next/headers";
-import { sameOrigin } from "@/lib/request-security";
+import { readBoundedBody, sameOrigin } from "@/lib/request-security";
 import { proPlan } from "@/lib/pro-plan";
 import {
   billingConfigured,
@@ -8,6 +8,7 @@ import {
   cookieOptions,
   getMembership,
   paddle,
+  paidPriceId,
   sessionCookie,
   transactionCookie,
   type Transaction,
@@ -31,9 +32,17 @@ export async function GET() {
       { headers },
     );
   try {
-    const { active, status, management } = await getMembership();
+    const { active, status, management, workspaceId } = await getMembership();
     return Response.json(
-      { configured, active, status, management, pdfImportAvailable },
+      {
+        configured,
+        paidCheckoutAvailable: Boolean(paidPriceId()),
+        active,
+        workspaceId,
+        status,
+        management,
+        pdfImportAvailable,
+      },
       { headers },
     );
   } catch {
@@ -50,18 +59,37 @@ export async function POST(request: Request) {
   }
   if (!billingConfigured()) return unavailable();
 
+  let mode = "trial";
+  try {
+    const body = await readBoundedBody(request, 512);
+    if (body === null) throw new Error("Invalid checkout request");
+    if (body.length) mode = JSON.parse(new TextDecoder().decode(body))?.mode;
+    if (mode !== "paid" && mode !== "trial")
+      throw new Error("Unknown checkout mode");
+  } catch {
+    return Response.json(
+      { error: "Choose a trial or paid checkout." },
+      { headers, status: 400 },
+    );
+  }
+  const priceId =
+    mode === "paid" ? paidPriceId() : process.env.NEXT_PUBLIC_PADDLE_PRICE_ID;
+  if (!priceId) {
+    return Response.json(
+      {
+        error:
+          "Paid checkout is unavailable until its Paddle price is configured.",
+      },
+      { headers, status: 503 },
+    );
+  }
+
   try {
     const current = await getMembership();
     if (current.transaction?.subscription_id && current.status !== "canceled") {
       return Response.json(
         { error: "Manage your existing subscription in Paddle." },
         { headers, status: 409 },
-      );
-    }
-    if (current.transaction && ["draft", "ready"].includes(current.status)) {
-      return Response.json(
-        { transactionId: current.transaction.id },
-        { headers },
       );
     }
     if (
@@ -77,7 +105,6 @@ export async function POST(request: Request) {
       );
     }
 
-    const priceId = process.env.NEXT_PUBLIC_PADDLE_PRICE_ID;
     const price = await paddle<{
       status: string;
       unit_price: { amount: string; currency_code: string };
@@ -87,7 +114,7 @@ export async function POST(request: Request) {
         frequency: number;
         unit_price?: { amount: string };
         requires_payment_method?: boolean;
-      };
+      } | null;
     }>("/prices/" + priceId);
     if (
       price.status !== "active" ||
@@ -95,16 +122,36 @@ export async function POST(request: Request) {
       price.unit_price.currency_code !== proPlan.currency ||
       price.billing_cycle?.interval !== "month" ||
       price.billing_cycle.frequency !== 1 ||
-      price.trial_period?.interval !== "day" ||
-      price.trial_period.frequency !== proPlan.trialDays ||
-      Number(price.trial_period.unit_price?.amount ?? 0) !== 0 ||
-      price.trial_period.requires_payment_method === false
+      (mode === "paid"
+        ? price.trial_period != null
+        : price.trial_period?.interval !== "day" ||
+          price.trial_period.frequency !== proPlan.trialDays ||
+          Number(price.trial_period.unit_price?.amount ?? 0) !== 0 ||
+          price.trial_period.requires_payment_method === false)
     ) {
       return Response.json(
         {
-          error: `Configure the Paddle Pro price for ${proPlan.currency} ${proPlan.monthlyAmount} monthly with a ${proPlan.trialDays}-day free trial.`,
+          error:
+            mode === "paid"
+              ? `Configure a paid Paddle Pro price for ${proPlan.currency} ${proPlan.monthlyAmount} monthly without a trial.`
+              : `Configure the Paddle Pro price for ${proPlan.currency} ${proPlan.monthlyAmount} monthly with a ${proPlan.trialDays}-day free trial.`,
         },
         { headers, status: 503 },
+      );
+    }
+    const items = [{ price_id: priceId, quantity: 1 }];
+    if (current.transaction && ["draft", "ready"].includes(current.status)) {
+      const [item, extra] = current.transaction.items ?? [];
+      if (item && !extra && item.price.id === priceId && item.quantity === 1) {
+        return Response.json(
+          { transactionId: current.transaction.id },
+          { headers },
+        );
+      }
+      await paddle<Transaction>(
+        "/transactions/" + current.transaction.id,
+        { status: "canceled" },
+        "PATCH",
       );
     }
     const jar = await cookies();
@@ -114,7 +161,7 @@ export async function POST(request: Request) {
         ? existingSecret
         : randomBytes(32).toString("hex");
     const transaction = await paddle<Transaction>("/transactions", {
-      items: [{ price_id: priceId, quantity: 1 }],
+      items,
       collection_mode: "automatic",
       custom_data: { leasedesk: billingReference(secret) },
     });
