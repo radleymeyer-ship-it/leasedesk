@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState, type ReactNode } from "react";
+import { leaseVatRate, monthlyLeaseCharges } from "@/lib/lease-charges";
 import type { Lease } from "@/types/lease";
 
 type ReportLease = {
@@ -195,18 +196,39 @@ export function RenewalComparison({
     Number.isFinite(freeMonths) &&
     freeMonths >= 0 &&
     freeMonths <= 12;
-  const annual = proposed * (12 - freeMonths);
-  const difference = annual - contractual * 12;
+  const current = monthlyLeaseCharges(lease);
+  const escalated = monthlyLeaseCharges(lease, contractual);
+  const proposalCharges = monthlyLeaseCharges(lease, proposed);
+  const rentFree = monthlyLeaseCharges(lease, 0);
+  const paidMonths = 12 - freeMonths;
+  const fullMonths = Math.floor(paidMonths);
+  const partialMonth = paidMonths - fullMonths;
+  const annual =
+    proposalCharges.total * fullMonths +
+    rentFree.total * (12 - fullMonths - Number(partialMonth > 0)) +
+    (partialMonth > 0
+      ? monthlyLeaseCharges(lease, proposed * partialMonth).total
+      : 0);
+  const difference = annual - escalated.total * 12;
+  const billing = (label: string, charges: typeof current) =>
+    `${label}: ${money(charges.total)} per month (${money(charges.subtotal)} ex VAT${charges.vatApplicable ? ` + ${money(charges.vat)} VAT at ${leaseVatRate}%` : "; no VAT applied"})`;
   const summary = [
     `Renewal comparison | ${lease.tenant}`,
     `Premises: ${[lease.property, lease.unit].filter(Boolean).join(", ")}`,
     `Current base rent: ${money(lease.rent)} per month`,
     `Contractual escalation: ${lease.escalation}% to ${money(contractual)} per month`,
     `Proposed base rent: ${money(proposed)} per month, with ${freeMonths} rent-free months in year one`,
-    `Proposed year-one base rent: ${money(annual)}`,
+    `Monthly recoveries (ex VAT): operating costs ${money(current.operatingCosts)} + municipal charges ${money(current.municipalCharges)}`,
+    billing("Current monthly billing", current),
+    billing("Contractual monthly billing", escalated),
+    billing("Proposed monthly billing", proposalCharges),
+    ...(freeMonths > 0
+      ? [billing("Billing in a fully rent-free month", rentFree)]
+      : []),
+    `Proposed year-one billing: ${money(annual)}`,
     `Year-one difference vs contractual escalation: ${money(difference)}`,
-    `Year-one difference vs current rent: ${money(annual - lease.rent * 12)}`,
-    "Base rent only. VAT, recoveries and other charges are excluded.",
+    `Year-one difference vs current billing: ${money(annual - current.total * 12)}`,
+    "Assumes recoveries stay constant and remain payable during rent-free periods.",
   ].join("\n");
   return (
     <ToolDialog title="Compare renewal terms" onClose={onClose}>

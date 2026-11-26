@@ -23,6 +23,7 @@ import {
 } from "lucide-react";
 
 import Image from "next/image";
+import { leaseVatRate, monthlyLeaseCharges } from "@/lib/lease-charges";
 import { isLeaseDate, type Lease, type LeaseDraft } from "@/types/lease";
 import { Billing, useBilling } from "./billing";
 import { LandlordReport, RenewalComparison } from "./broker-tools";
@@ -248,6 +249,7 @@ function derive(l: StoredLease, t: Date) {
     noticeBy,
     escIn,
     status,
+    charges: monthlyLeaseCharges(l),
     newRent: l.rent * (1 + l.escalation / 100),
     noticeDate: offset(new Date(l.leaseEnd), -l.noticeDays),
   };
@@ -284,6 +286,9 @@ const blankLease: LeaseDraft = {
   landlord: "",
   landlordContact: "",
   rent: null,
+  operatingCosts: 0,
+  municipalCharges: 0,
+  vatApplicable: true,
   escalation: null,
   escalationDate: "",
   leaseEnd: "",
@@ -447,7 +452,8 @@ function Workspace({
   const metrics = useMemo(() => {
     const owing = rows.filter((r) => r.l.arrears > 0);
     return {
-      rentRoll: live.reduce((s, r) => s + r.l.rent, 0),
+      rentRoll: live.reduce((s, r) => s + r.charges.baseRent, 0),
+      monthlyBilling: live.reduce((s, r) => s + r.charges.total, 0),
       arrears: owing.reduce((s, r) => s + r.l.arrears, 0),
       owingCount: owing.length,
       noticesDue: live.filter((r) => r.noticeBy <= 30).length,
@@ -673,7 +679,7 @@ function Workspace({
               <MetricCard
                 label="Monthly rent roll"
                 value={zar(metrics.rentRoll)}
-                note="Across active leases"
+                note={`Base rent · ${zar(metrics.monthlyBilling)} total billed`}
                 icon={<Coins size={23} />}
                 onClick={() => {
                   setNav("portfolio");
@@ -856,6 +862,9 @@ function Workspace({
                               </td>
                               <td className="whitespace-nowrap px-3 py-3 font-medium">
                                 {zar(l.rent)}
+                                <div className="text-xs font-normal text-slate-600">
+                                  {zar(r.charges.total)} billed
+                                </div>
                               </td>
                               <td className="px-3 py-3">
                                 <span className="font-medium text-emerald-800">
@@ -1354,8 +1363,13 @@ function downloadLeaseRegister(rows: Row[], date: string) {
       "Arrears (ZAR)",
       "Renewal stage",
       "Next follow-up",
+      "Operating costs ex VAT (ZAR/month)",
+      "Municipal charges ex VAT (ZAR/month)",
+      "VAT applicable",
+      "VAT (ZAR/month)",
+      "Total billing (ZAR/month)",
     ],
-    ...rows.map(({ l, noticeDate, status }) => [
+    ...rows.map(({ l, noticeDate, status, charges }) => [
       l.property,
       l.unit,
       l.tenant,
@@ -1369,6 +1383,11 @@ function downloadLeaseRegister(rows: Row[], date: string) {
       l.arrears,
       l.followUp?.stage ?? "Not started",
       l.followUp?.date ?? "",
+      charges.operatingCosts,
+      charges.municipalCharges,
+      charges.vatApplicable ? "Yes" : "No",
+      charges.vat,
+      charges.total,
     ]),
   ];
   const csv = records
@@ -1625,6 +1644,7 @@ function LetterModal({
   }, [onClose]);
 
   const date = fmt(offset(startOfDay(new Date()), 0));
+  const charges = monthlyLeaseCharges(lease);
 
   const text = `WITHOUT PREJUDICE — NOTICE OF BREACH AND DEMAND FOR PAYMENT
 
@@ -1642,12 +1662,15 @@ Landlord: ${lease.landlord}
 
 Dear Sir/Madam
 
-1. We refer to the written Lease Agreement between ${lease.landlord} ("the Landlord") and ${lease.tenant} ("the Tenant") in respect of ${premises(lease)}, at a current monthly rental of ${zar(lease.rent)}.
+1. We refer to the written Lease Agreement between ${lease.landlord} ("the Landlord") and ${lease.tenant} ("the Tenant") in respect of ${premises(lease)}. The current monthly obligation comprises:
+   Base rent (ex VAT): ${zar(charges.baseRent)}
+   Operating cost recoveries (ex VAT): ${zar(charges.operatingCosts)}
+   Municipal charge recoveries (ex VAT): ${zar(charges.municipalCharges)}
+   Subtotal (ex VAT): ${zar(charges.subtotal)}${charges.vatApplicable ? `\n   VAT at ${leaseVatRate}%: ${zar(charges.vat)}` : ""}
+   Total monthly obligation: ${zar(charges.total)}
 
 
-2. The Tenant is in breach of its obligations under the Lease Agreement by failing to pay the amount due
- on the due date. As at ${date}, an arrear amount of ${zar(arrears)}
- is due, owing, and payable.
+2. The Tenant is in breach of its obligations under the Lease Agreement by failing to pay the amount due on the due date. As at ${date}, the outstanding arrears balance demanded is ${zar(arrears)}, as reflected in the tenant account. This balance is separate from the current monthly charge breakdown above.
 
 3. In terms of the Breach Clause of the Lease Agreement, demand is hereby made that the Tenant remedy this breach within ${cure} days
  of receipt of this notice by paying ${zar(arrears)} in cleared funds into the Landlord's nominated account, quoting reference ${lease.id}
@@ -1890,6 +1913,18 @@ const leaseFields = [
     step: "0.01",
     required: true,
   },
+  {
+    name: "operatingCosts",
+    label: "Operating costs per month (ZAR, ex VAT)",
+    type: "number",
+    step: "0.01",
+  },
+  {
+    name: "municipalCharges",
+    label: "Municipal charges per month (ZAR, ex VAT)",
+    type: "number",
+    step: "0.01",
+  },
   { name: "escalationDate", label: "Next escalation date", type: "date" },
   {
     name: "leaseEnd",
@@ -1980,6 +2015,9 @@ function AddLeaseModal({
       landlord,
       landlordContact: read("landlordContact"),
       rent: Number(read("rent")),
+      operatingCosts: Number(read("operatingCosts")),
+      municipalCharges: Number(read("municipalCharges")),
+      vatApplicable: data.has("vatApplicable"),
       escalation,
       escalationDate,
       leaseEnd: read("leaseEnd"),
@@ -2017,7 +2055,13 @@ function AddLeaseModal({
               {field.label}
               <input
                 name={field.name}
-                defaultValue={initial[field.name] ?? ""}
+                defaultValue={
+                  initial[field.name] ??
+                  (field.name === "operatingCosts" ||
+                  field.name === "municipalCharges"
+                    ? 0
+                    : "")
+                }
                 type={"type" in field ? field.type : "text"}
                 required={"required" in field && field.required}
                 min={"step" in field ? 0 : undefined}
@@ -2026,6 +2070,18 @@ function AddLeaseModal({
               />
             </label>
           ))}
+          <label className="flex items-start gap-2 text-sm font-medium sm:col-span-2">
+            <input
+              name="vatApplicable"
+              type="checkbox"
+              defaultChecked={initial.vatApplicable ?? true}
+              className="mt-1"
+            />
+            <span>
+              Apply {leaseVatRate}% VAT to base rent and recoveries. Enter
+              monthly charges exclusive of VAT.
+            </span>
+          </label>
         </div>
         {error && (
           <p role="alert" className="px-5 pb-3 text-sm text-red-700">

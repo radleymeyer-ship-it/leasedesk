@@ -8,6 +8,9 @@ export type Lease = {
   landlord: string;
   landlordContact: string;
   rent: number;
+  operatingCosts?: number;
+  municipalCharges?: number;
+  vatApplicable?: boolean;
   escalation: number;
   escalationDate: string;
   leaseEnd: string;
