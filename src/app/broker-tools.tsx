@@ -2,6 +2,12 @@
 
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { leaseVatRate, monthlyLeaseCharges } from "@/lib/lease-charges";
+import {
+  depositInterestRules,
+  guaranteeAlert,
+  leaseSecurity,
+  securitySummary,
+} from "@/lib/lease-security";
 import type { Lease } from "@/types/lease";
 
 type ReportLease = {
@@ -103,7 +109,8 @@ export function LandlordReport({
     ...new Set(rows.map(({ l }) => l.landlord).filter(Boolean)),
   ].sort();
   const [landlord, setLandlord] = useState(landlords[0] ?? "");
-  const leases = rows.filter(({ l }) => l.landlord === landlord);
+  const landlordLeases = rows.filter(({ l }) => l.landlord === landlord);
+  const leases = landlordLeases.filter(({ daysLeft }) => daysLeft >= 0);
   const open = leases.filter(
     ({ l }) =>
       l.followUp?.stage !== "Renewed" && l.followUp?.stage !== "Vacating",
@@ -143,6 +150,16 @@ export function LandlordReport({
         (item) =>
           `${name(item)} · ${item.l.escalationDate} · ${money(item.l.rent)} to ${money(item.newRent)}`,
       ),
+    "Deposit and bank guarantee coverage\n" +
+      lines(landlordLeases, (item) => {
+        const security = leaseSecurity(item.l);
+        const alert = guaranteeAlert(security.guaranteeExpiry, date);
+        const interest =
+          security.securityType === "cash_deposit"
+            ? " · " + depositInterestRules[security.depositInterestRule]
+            : "";
+        return `${name(item)} · ${securitySummary(security, money)}${interest}${alert ? " · " + alert.text : ""}`;
+      }),
   ].join("\n\n");
   return (
     <ToolDialog title="Weekly landlord report" onClose={onClose}>
@@ -168,7 +185,7 @@ export function LandlordReport({
         </div>
       ) : (
         <p className="text-sm text-slate-600">
-          Add an active lease with a landlord to generate a report.
+          Add a lease with a landlord to generate a report.
         </p>
       )}
     </ToolDialog>

@@ -1,6 +1,10 @@
 import { randomBytes } from "node:crypto";
 import { cookies } from "next/headers";
-import { readBoundedBody, sameOrigin } from "@/lib/request-security";
+import {
+  isLoopbackDevelopment,
+  readBoundedBody,
+  sameOrigin,
+} from "@/lib/request-security";
 import { proPlan } from "@/lib/pro-plan";
 import {
   billingConfigured,
@@ -21,11 +25,12 @@ const unavailable = () =>
     { headers, status: 503 },
   );
 
-export async function GET() {
+export async function GET(request: Request) {
   const configured = billingConfigured();
+  const localPdfImport =
+    isLoopbackDevelopment(request) && Boolean(process.env.GEMINI_API_KEY);
   const pdfImportAvailable =
-    Boolean(process.env.GEMINI_API_KEY) &&
-    (configured || process.env.NODE_ENV === "development");
+    localPdfImport || (configured && Boolean(process.env.GEMINI_API_KEY));
   if (!configured)
     return Response.json(
       { configured, active: false, pdfImportAvailable },
@@ -41,11 +46,27 @@ export async function GET() {
         workspaceId,
         status,
         management,
-        pdfImportAvailable,
+        pdfImportAvailable: localPdfImport || (active && pdfImportAvailable),
+        localPdfImport,
+        pdfImportMessage: !process.env.GEMINI_API_KEY
+          ? "PDF import is not configured on this deployment."
+          : "Start or confirm your Pro trial to upload a lease PDF.",
       },
       { headers },
     );
   } catch {
+    if (localPdfImport) {
+      return Response.json(
+        {
+          configured,
+          active: false,
+          pdfImportAvailable: true,
+          localPdfImport,
+          error: "Paddle billing is temporarily unavailable.",
+        },
+        { headers },
+      );
+    }
     return unavailable();
   }
 }

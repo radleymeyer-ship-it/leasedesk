@@ -1,9 +1,20 @@
-export function sameOrigin(request: Request, allowMissing = false) {
+export function isLoopbackDevelopment(request: Request) {
+  return (
+    process.env.NODE_ENV === "development" &&
+    ["localhost", "127.0.0.1", "[::1]"].includes(new URL(request.url).hostname)
+  );
+}
+
+export function sameOrigin(request: Request, localDevelopment = false) {
   const site = request.headers.get("sec-fetch-site");
   if (site && site !== "same-origin" && site !== "none") return false;
   const origin = request.headers.get("origin");
-  if (!origin) return allowMissing;
-  return origin === (process.env.APP_ORIGIN || new URL(request.url).origin);
+  if (!origin) return localDevelopment;
+  const requestOrigin = new URL(request.url).origin;
+  return (
+    origin ===
+    (localDevelopment ? requestOrigin : process.env.APP_ORIGIN || requestOrigin)
+  );
 }
 
 export async function readBoundedBody(request: Request, limit: number) {

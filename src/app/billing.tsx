@@ -17,6 +17,8 @@ type BillingState = {
   configured?: boolean;
   paidCheckoutAvailable?: boolean;
   pdfImportAvailable?: boolean;
+  localPdfImport?: boolean;
+  pdfImportMessage?: string;
   active?: boolean;
   workspaceId?: string | null;
   status?: string;

@@ -24,8 +24,17 @@ import {
 
 import Image from "next/image";
 import { leaseVatRate, monthlyLeaseCharges } from "@/lib/lease-charges";
+import { ficaFlags, ficaStatus, ficaTotal, leaseCompliance } from "@/lib/lease-compliance";
+import {
+  depositInterestRules,
+  guaranteeAlert,
+  leaseSecurity,
+  securitySummary,
+  securityTypes,
+} from "@/lib/lease-security";
 import { isLeaseDate, type Lease, type LeaseDraft } from "@/types/lease";
 import { Billing, useBilling } from "./billing";
+import { ComplianceDrawer, ComplianceFields } from "./lease-compliance";
 import { LandlordReport, RenewalComparison } from "./broker-tools";
 import { RenewalEmailDialog, stopRenewalEmail } from "./renewal-email";
 
@@ -37,7 +46,8 @@ type FilterTab =
   | "arrears"
   | "renewals"
   | "escalations"
-  | "expired";
+  | "expired"
+  | "fica-incomplete";
 
 /* ---------------------------------- Helpers --------------------------------- */
 
@@ -99,6 +109,16 @@ function sampleLeases(t: Date): Lease[] {
     noticeDays,
     arrears,
     arrearsDays,
+    entityType: tenant.endsWith(" CC") ? "close_corporation" : "company",
+    ficaChecklist: {
+      ...ficaFlags(true),
+      beneficialOwnership: id !== "L-1042",
+      proofOfAddress: id !== "L-1045",
+      proofOfAddressDate: offset(t, id === "L-1045" ? -120 : -24),
+      complianceNotes:
+        id === "L-1042" ? "Awaiting CIPC beneficial ownership filing confirmation."
+          : id === "L-1045" ? "Requested a recent proof of address." : "",
+    },
   });
   const boland = [
     "Boland Property Holdings (Pty) Ltd",
@@ -250,6 +270,8 @@ function derive(l: StoredLease, t: Date) {
     escIn,
     status,
     charges: monthlyLeaseCharges(l),
+    security: leaseSecurity(l),
+    fica: ficaStatus(l),
     newRent: l.rent * (1 + l.escalation / 100),
     noticeDate: offset(new Date(l.leaseEnd), -l.noticeDays),
   };
@@ -303,8 +325,15 @@ async function extractLease(file: File): Promise<LeaseDraft> {
   const body = new FormData();
   body.append("file", file);
   const response = await fetch("/api/extract", { method: "POST", body });
-  const data = await response.json();
-  if (!response.ok) throw new Error(data.error || "Could not read this PDF.");
+  if (response.status === 413)
+    throw new Error("Choose a PDF no larger than 4 MB.");
+  const data = await response.json().catch(() => null);
+  if (!response.ok || !data) {
+    throw new Error(
+      data?.error ||
+        "Could not read this PDF. Try again or add the lease manually.",
+    );
+  }
   return data;
 }
 
@@ -348,7 +377,10 @@ function Workspace({
   const [today, setToday] = useState<Date | null>(null);
   const [leases, setLeases] = useState<StoredLease[]>([]);
   const [storageError, setStorageError] = useState("");
-  const canUseWorkspace = Boolean(workspaceId) || billing.configured === false;
+  const canUseWorkspace =
+    Boolean(workspaceId) ||
+    billing.configured === false ||
+    billing.localPdfImport === true;
 
   useEffect(() => {
     function load() {
@@ -417,6 +449,7 @@ function Workspace({
   // Modals
   const [letterLease, setLetterLease] = useState<Lease | null>(null);
   const [reminderRow, setReminderRow] = useState<Row | null>(null);
+  const [complianceLease, setComplianceLease] = useState<Lease | null>(null);
   const [followUpLease, setFollowUpLease] = useState<StoredLease | null>(null);
   const [dueOnly, setDueOnly] = useState(false);
   const [reportOpen, setReportOpen] = useState(false);
@@ -476,6 +509,7 @@ function Workspace({
       (r) => r.status !== "expired" && r.escIn >= 0 && r.escIn <= 60,
     ).length,
     expired: rows.filter((r) => r.status === "expired").length,
+    "fica-incomplete": rows.filter((r) => !r.fica.complete).length,
   };
 
   const shown = useMemo(() => {
@@ -489,7 +523,8 @@ function Workspace({
         r.status !== "expired" &&
         r.escIn >= 0 &&
         r.escIn <= 60) ||
-      (view === "expired" && r.status === "expired");
+      (view === "expired" && r.status === "expired") ||
+      (view === "fica-incomplete" && !r.fica.complete);
     return rows
       .filter(keep)
       .filter(
@@ -514,6 +549,16 @@ function Workspace({
   );
 
   const todayISO = today ? offset(today, 0) : "";
+  const guaranteeWarnings = rows
+    .flatMap((row) => {
+      const alert = guaranteeAlert(row.security.guaranteeExpiry, todayISO);
+      return alert ? [{ row, alert }] : [];
+    })
+    .sort((a, b) =>
+      a.row.security.guaranteeExpiry.localeCompare(
+        b.row.security.guaranteeExpiry,
+      ),
+    );
   const dueFollowUps = renewalRows.filter(
     ({ l }) =>
       l.followUp?.date &&
@@ -546,6 +591,22 @@ function Workspace({
         msg: err instanceof Error ? err.message : "Could not read this PDF.",
       });
     }
+  }
+  function openPdfPicker() {
+    if (canUseWorkspace && billing.pdfImportAvailable) {
+      setParse({ k: "idle" });
+      fileRef.current?.click();
+      return;
+    }
+    setParse({
+      k: "err",
+      msg: billing.error
+        ? "Could not verify PDF upload access. Refresh billing and try again."
+        : billing.configured === undefined
+          ? "Checking PDF upload access. Try again in a moment."
+          : (billing.pdfImportMessage ??
+            "PDF import is unavailable in this demo. Use Add lease to enter the details manually."),
+    });
   }
   return (
     <div>
@@ -605,18 +666,14 @@ function Workspace({
             <input
               ref={fileRef}
               type="file"
-              accept="application/pdf"
+              accept=".pdf,application/pdf"
               className="hidden"
               onChange={onFile}
             />{" "}
             <button
-              onClick={() => fileRef.current?.click()}
-              disabled={
-                !today ||
-                !canUseWorkspace ||
-                !billing.pdfImportAvailable ||
-                parse.k === "busy"
-              }
+              type="button"
+              onClick={openPdfPicker}
+              disabled={parse.k === "busy"}
               aria-describedby="pdf-import-description"
               className="inline-flex h-9 items-center gap-2 rounded-md bg-zinc-900 px-3.5 text-sm font-medium text-white hover:bg-zinc-800 disabled:opacity-60"
             >
@@ -743,6 +800,7 @@ function Workspace({
                           { key: "arrears", label: "In arrears" },
                           { key: "escalations", label: "Escalating soon" },
                           { key: "expired", label: "Expired" },
+                          { key: "fica-incomplete", label: "FICA incomplete" },
                         ] as { key: FilterTab; label: string }[]
                       ).map((t) => (
                         <button
@@ -846,6 +904,13 @@ function Workspace({
                                     {l.unit}
                                   </div>
                                 )}
+                                <div className="mt-1 text-xs text-slate-600">
+                                  {securitySummary(r.security, zar)}
+                                </div>
+                                <GuaranteeWarning
+                                  expiry={r.security.guaranteeExpiry}
+                                  today={todayISO}
+                                />
                               </td>
                               <td className="px-3 py-3">
                                 <div className="font-medium text-slate-900">
@@ -903,6 +968,18 @@ function Workspace({
                                 >
                                   {BADGE[r.status].text}
                                 </span>
+                                <div className="mt-1">
+                                  <button
+                                    type="button"
+                                    aria-label={`FICA ${r.fica.count}/${ficaTotal} for ${l.tenant}, open compliance checklist`}
+                                    onClick={() => setComplianceLease(l)}
+                                    className={`inline-flex whitespace-nowrap rounded-full px-2 py-1 text-xs font-semibold ring-1 ring-inset ${
+                                      r.fica.complete ? BADGE.active.cls : BADGE.notice.cls
+                                    } hover:underline`}
+                                  >
+                                    FICA {r.fica.count}/{ficaTotal}
+                                  </button>
+                                </div>
                                 {l.arrears > 0 && (
                                   <div className="mt-1 whitespace-nowrap text-xs text-red-700">
                                     Owes {zar(l.arrears)}
@@ -1010,7 +1087,8 @@ function Workspace({
                       Contract Renewal &amp; Escalation Reminders
                     </h2>
                     <p className="text-xs text-zinc-500">
-                      Review lease deadlines and track tenant follow-ups.
+                      Review lease deadlines, bank guarantees and tenant
+                      follow-ups.
                     </p>
                   </div>
                   <label className="flex items-center gap-2 text-sm font-medium text-slate-700">
@@ -1029,6 +1107,38 @@ function Workspace({
                     Weekly landlord report
                   </button>
                 </div>
+                {guaranteeWarnings.length > 0 && (
+                  <section
+                    aria-label="Bank guarantee alerts"
+                    className="space-y-2 border-b border-amber-200 bg-amber-50 px-5 py-4"
+                  >
+                    <h3 className="text-sm font-semibold text-slate-900">
+                      Bank guarantee alerts ({guaranteeWarnings.length})
+                    </h3>
+                    <ul className="space-y-2">
+                      {guaranteeWarnings.map(({ row, alert }) => (
+                        <li
+                          key={row.l.id}
+                          className="flex flex-wrap items-center justify-between gap-2 text-sm"
+                        >
+                          <span>
+                            {row.l.tenant} ·{" "}
+                            {securitySummary(row.security, zar)}
+                          </span>
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setEditor({ lease: row.l, id: row.l.id })
+                            }
+                            className={`font-semibold underline ${alert.expired ? "text-red-800" : "text-amber-900"}`}
+                          >
+                            {alert.text}
+                          </button>
+                        </li>
+                      ))}
+                    </ul>
+                  </section>
+                )}
                 <div className="divide-y divide-zinc-100">
                   {visibleRenewals.length === 0 && (
                     <p className="p-5 text-sm text-zinc-600">
@@ -1227,7 +1337,7 @@ function Workspace({
       )}{" "}
       {reportOpen && (
         <LandlordReport
-          rows={renewalRows}
+          rows={rows}
           date={todayISO}
           onClose={() => setReportOpen(false)}
         />
@@ -1301,6 +1411,19 @@ function Workspace({
       {reminderRow && (
         <ReminderModal row={reminderRow} onClose={() => setReminderRow(null)} />
       )}{" "}
+      {complianceLease && (
+        <ComplianceDrawer
+          lease={complianceLease}
+          onClose={() => setComplianceLease(null)}
+          onSave={(value) => persist((records) => {
+            if (!records.some((record) => record.id === complianceLease.id))
+              throw new Error("Lease no longer exists");
+            return records.map((record) =>
+              record.id === complianceLease.id ? { ...record, ...value } : record,
+            );
+          })}
+        />
+      )}
       {editor && canUseWorkspace && (
         <AddLeaseModal
           initial={editor.lease}
@@ -1368,8 +1491,14 @@ function downloadLeaseRegister(rows: Row[], date: string) {
       "VAT applicable",
       "VAT (ZAR/month)",
       "Total billing (ZAR/month)",
+      "Security type",
+      "Security amount (ZAR)",
+      "Bank guarantee expiry",
+      "Deposit interest rule",
+      "FICA completion status",
+      "FICA missing items",
     ],
-    ...rows.map(({ l, noticeDate, status, charges }) => [
+    ...rows.map(({ l, noticeDate, status, charges, security, fica }) => [
       l.property,
       l.unit,
       l.tenant,
@@ -1388,6 +1517,12 @@ function downloadLeaseRegister(rows: Row[], date: string) {
       charges.vatApplicable ? "Yes" : "No",
       charges.vat,
       charges.total,
+      securityTypes[security.securityType],
+      security.securityAmount,
+      security.guaranteeExpiry,
+      depositInterestRules[security.depositInterestRule],
+      fica.complete ? "Complete" : `Incomplete (${fica.count}/${ficaTotal})`,
+      fica.missing.join("; "),
     ]),
   ];
   const csv = records
@@ -1414,6 +1549,23 @@ function downloadLeaseRegister(rows: Row[], date: string) {
   link.click();
   link.remove();
   setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+function GuaranteeWarning({
+  expiry,
+  today,
+}: {
+  expiry: string;
+  today: string;
+}) {
+  const alert = guaranteeAlert(expiry, today);
+  return alert ? (
+    <div
+      className={`text-xs font-semibold ${alert.expired ? "text-red-700" : "text-amber-800"}`}
+    >
+      {alert.text}
+    </div>
+  ) : null;
 }
 
 function FollowUpDialog({
@@ -1974,6 +2126,11 @@ function AddLeaseModal({
 }) {
   const dialog = useRef<HTMLDialogElement>(null);
   const [error, setError] = useState("");
+  const initialSecurity = leaseSecurity(initial);
+  const [compliance, setCompliance] = useState(() => leaseCompliance(initial));
+  const [securityType, setSecurityType] = useState(
+    initialSecurity.securityType,
+  );
 
   useEffect(() => {
     const element = dialog.current;
@@ -2024,6 +2181,14 @@ function AddLeaseModal({
       noticeDays: Number(read("noticeDays")),
       arrears: Number(read("arrears")),
       arrearsDays: Number(read("arrearsDays")),
+      ...leaseCompliance(compliance),
+      ...leaseSecurity({
+        securityType,
+        securityAmount: Number(read("securityAmount")),
+        guaranteeExpiry: read("guaranteeExpiry"),
+        depositInterestRule: read("depositInterestRule"),
+        securityNotes: read("securityNotes"),
+      }),
     });
     if (!saved) setError("Could not save this lease in your browser.");
   }
@@ -2083,6 +2248,96 @@ function AddLeaseModal({
             </span>
           </label>
         </div>
+        <fieldset className="mx-5 mb-5 grid gap-3 rounded-lg border border-slate-200 p-3 sm:grid-cols-2">
+          <legend className="px-1 text-sm font-semibold">
+            Deposit / Bank Guarantee
+          </legend>
+          <label className="grid gap-1 text-sm font-medium">
+            Security type
+            <select
+              value={securityType}
+              onChange={(event) =>
+                setSecurityType(
+                  leaseSecurity({ securityType: event.target.value })
+                    .securityType,
+                )
+              }
+              className="h-9 rounded-md border border-zinc-300 bg-white px-3"
+            >
+              {Object.entries(securityTypes).map(([value, label]) => (
+                <option key={value} value={value}>
+                  {label}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="grid gap-1 text-sm font-medium">
+            Security amount (ZAR)
+            <input
+              name="securityAmount"
+              type="number"
+              min={0}
+              step="0.01"
+              defaultValue={initialSecurity.securityAmount}
+              disabled={securityType === "none"}
+              className="h-9 rounded-md border border-zinc-300 px-3 disabled:bg-slate-100"
+            />
+          </label>
+          <label
+            className={
+              securityType === "bank_guarantee"
+                ? "grid gap-1 text-sm font-medium"
+                : "hidden"
+            }
+          >
+            Bank guarantee expiry
+            <input
+              name="guaranteeExpiry"
+              type="date"
+              max="9999-12-31"
+              defaultValue={initialSecurity.guaranteeExpiry}
+              disabled={securityType !== "bank_guarantee"}
+              className="h-9 rounded-md border border-zinc-300 px-3"
+            />
+          </label>
+          <label
+            className={
+              securityType === "cash_deposit"
+                ? "grid gap-1 text-sm font-medium"
+                : "hidden"
+            }
+          >
+            Deposit interest rule
+            <select
+              name="depositInterestRule"
+              defaultValue={
+                initialSecurity.securityType === "cash_deposit"
+                  ? initialSecurity.depositInterestRule
+                  : "interest_bearing_tenant"
+              }
+              disabled={securityType !== "cash_deposit"}
+              className="h-9 rounded-md border border-zinc-300 bg-white px-3"
+            >
+              {Object.entries(depositInterestRules).map(([value, label]) => (
+                <option key={value} value={value}>
+                  {label}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="grid gap-1 text-sm font-medium sm:col-span-2">
+            Security notes
+            <textarea
+              name="securityNotes"
+              rows={2}
+              maxLength={1000}
+              defaultValue={initialSecurity.securityNotes}
+              placeholder="Issuing bank, reference number or renewal top-up"
+              className="rounded-md border border-zinc-300 p-2"
+            />
+          </label>
+        </fieldset>
+        <ComplianceFields value={compliance} onChange={setCompliance} />
         {error && (
           <p role="alert" className="px-5 pb-3 text-sm text-red-700">
             {error}
