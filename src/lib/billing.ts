@@ -67,7 +67,10 @@ export type Transaction = {
 
 type Subscription = {
   status: string;
-  items: { price: { id: string } }[];
+  items: {
+    price: { id: string };
+    trial_dates?: { ends_at: string } | null;
+  }[];
   management_urls?: { cancel?: string; update_payment_method?: string };
 };
 
@@ -79,6 +82,7 @@ export async function getMembership() {
     active: false,
     workspaceId: null,
     status: "inactive",
+    trialEndsAt: null,
     transaction: null,
     management: undefined,
   };
@@ -99,11 +103,12 @@ export async function getMembership() {
   const subscription = await paddle<Subscription>(
     "/subscriptions/" + transaction.subscription_id,
   );
-  const matches = subscription.items.some(
+  const planItem = subscription.items.find(
     ({ price }) =>
       price.id === process.env.NEXT_PUBLIC_PADDLE_PRICE_ID ||
       price.id === paidPriceId(),
   );
+  const matches = Boolean(planItem);
   const active =
     matches && ["trialing", "active"].includes(subscription.status);
   return {
@@ -114,6 +119,10 @@ export async function getMembership() {
           .digest("hex")
       : null,
     status: subscription.status,
+    trialEndsAt:
+      subscription.status === "trialing"
+        ? (planItem?.trial_dates?.ends_at ?? null)
+        : null,
     management: matches ? subscription.management_urls : undefined,
     transaction,
   };

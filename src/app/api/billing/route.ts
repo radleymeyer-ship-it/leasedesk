@@ -37,7 +37,8 @@ export async function GET(request: Request) {
       { headers },
     );
   try {
-    const { active, status, management, workspaceId } = await getMembership();
+    const { active, status, management, workspaceId, trialEndsAt } =
+      await getMembership();
     return Response.json(
       {
         configured,
@@ -45,6 +46,7 @@ export async function GET(request: Request) {
         active,
         workspaceId,
         status,
+        trialEndsAt,
         management,
         pdfImportAvailable: localPdfImport || (active && pdfImportAvailable),
         localPdfImport,

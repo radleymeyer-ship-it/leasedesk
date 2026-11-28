@@ -22,6 +22,7 @@ type BillingState = {
   active?: boolean;
   workspaceId?: string | null;
   status?: string;
+  trialEndsAt?: string | null;
   management?: { update_payment_method?: string; cancel?: string };
   error?: string;
 };
@@ -54,6 +55,22 @@ export function useBilling() {
     return () => controller.abort();
   }, []);
   return { state, setState };
+}
+
+function TrialCountdown({ endsAt }: { endsAt?: string | null }) {
+  const [now, setNow] = useState(() => Date.now());
+  const end = endsAt ? Date.parse(endsAt) : NaN;
+
+  useEffect(() => {
+    if (!Number.isFinite(end)) return;
+    const timer = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, [end]);
+
+  if (!Number.isFinite(end)) return "Trial active";
+  const days = Math.ceil((end - now) / 86_400_000);
+  if (days <= 0) return "Trial ended";
+  return `${days} ${days === 1 ? "day" : "days"} left in your trial`;
 }
 
 export function Billing({ state, setState }: ReturnType<typeof useBilling>) {
@@ -161,7 +178,11 @@ export function Billing({ state, setState }: ReturnType<typeof useBilling>) {
       <div className="flex flex-wrap items-center gap-3">
         {state.active && (
           <span className="font-medium text-emerald-800">
-            {state.status === "trialing" ? "Trial active" : "Pro active"}
+            {state.status === "trialing" ? (
+              <TrialCountdown endsAt={state.trialEndsAt} />
+            ) : (
+              "Pro active"
+            )}
           </span>
         )}
         {state.management?.update_payment_method && (
